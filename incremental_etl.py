@@ -18,6 +18,9 @@ LOG_PATH = Path("logs") / "etl.log"
 KEY = "transaction_id"
 COMPARED_FIELDS = ("customer_id", "merchant", "amount_kes", "status", "channel", "updated_at")
 
+REQUIRED_FIELDS = (KEY,) + COMPARED_FIELDS
+VALID_STATUSES = {"PENDING", "COMPLETED", "FAILED"}
+
 
 def setup_logging(path: Path = LOG_PATH) -> logging.Logger:
     """Configure a logger that writes to both the console and a log file."""
@@ -73,7 +76,35 @@ def load_batch(path: Path) -> tuple[str, list[dict]] | None:
 
 def validate_record(record: dict) -> list[str]:
     """Return the reasons a batch record cannot be loaded (empty list means valid)."""
-    raise NotImplementedError
+    if not isinstance(record, dict):
+        return ["record is not a JSON object"]
+
+    reasons = []
+
+    for field in REQUIRED_FIELDS:
+        value = record.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            reasons.append(f"missing {field}")
+
+    amount = record.get("amount_kes")
+    if amount is not None and amount != "":
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            reasons.append(f"amount_kes is not a number: {amount!r}")
+        elif amount <= 0:
+            reasons.append(f"amount_kes must be positive: {amount}")
+
+    status = record.get("status")
+    if status and status not in VALID_STATUSES:
+        reasons.append(f"unknown status: {status!r}")
+
+    updated_at = record.get("updated_at")
+    if updated_at:
+        try:
+            datetime.fromisoformat(updated_at)
+        except (ValueError, TypeError):
+            reasons.append(f"updated_at is not a valid timestamp: {updated_at!r}")
+
+    return reasons
 
 
 def classify(existing: dict[str, dict], batch: list[dict]) -> dict[str, list[dict]]:
