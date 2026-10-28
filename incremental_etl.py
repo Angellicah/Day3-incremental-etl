@@ -167,12 +167,38 @@ def upsert(existing: dict[str, dict], new: list[dict], updated: list[dict]) -> d
 
 def read_checkpoint(path: Path = CHECKPOINT_PATH) -> dict:
     """Return the saved checkpoint, or a fresh one if none exists yet."""
-    raise NotImplementedError
+    fresh = {
+        "last_run_at": None,
+        "processed_batches": [],
+        "high_watermark": None,
+        "row_count": 0,
+    }
+    if not path.exists():
+        return fresh
+    try:
+        with open(path, encoding="utf-8") as f:
+            checkpoint = json.load(f)
+        if not isinstance(checkpoint.get("processed_batches"), list):
+            raise ValueError("processed_batches missing or not a list")
+        return {**fresh, **checkpoint}
+    except (json.JSONDecodeError, ValueError, AttributeError) as e:
+        logging.getLogger("etl").warning(
+            "Checkpoint unreadable (%r) - starting from a fresh one", e
+        )
+        return fresh
 
 
 def write_checkpoint(checkpoint: dict, path: Path = CHECKPOINT_PATH) -> None:
     """Persist the checkpoint so an interrupted run never leaves a half-written file."""
-    raise NotImplementedError
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(checkpoint, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp_path, path)
 
 
 def save_warehouse(state: dict[str, dict], path: Path = WAREHOUSE_PATH) -> None:
