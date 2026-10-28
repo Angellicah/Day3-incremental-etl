@@ -4,6 +4,7 @@ Squad Python Specialization - Data Engineering
 
 Run it twice in a row. The second run must change nothing.
 """
+import os
 import csv
 import json
 import logging
@@ -156,7 +157,12 @@ def classify(existing: dict[str, dict], batch: list[dict]) -> dict[str, list[dic
 
 def upsert(existing: dict[str, dict], new: list[dict], updated: list[dict]) -> dict[str, dict]:
     """Return the merged state: inserts for new keys, replacements for updated keys."""
-    raise NotImplementedError
+    merged = dict(existing)  # copy, so we never mutate the caller's data
+    for record in new:
+        merged[record[KEY]] = record
+    for record in updated:
+        merged[record[KEY]] = record
+    return merged
 
 
 def read_checkpoint(path: Path = CHECKPOINT_PATH) -> dict:
@@ -171,7 +177,20 @@ def write_checkpoint(checkpoint: dict, path: Path = CHECKPOINT_PATH) -> None:
 
 def save_warehouse(state: dict[str, dict], path: Path = WAREHOUSE_PATH) -> None:
     """Write the merged state back to CSV in a stable order."""
-    raise NotImplementedError
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".csv.tmp")
+
+    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=[KEY, *COMPARED_FIELDS])
+        writer.writeheader()
+        for key in sorted(state):
+            row = dict(state[key])
+            row["amount_kes"] = f"{row['amount_kes']:.2f}"
+            writer.writerow(row)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp_path, path)  # atomic swap
 
 
 def run() -> dict:
