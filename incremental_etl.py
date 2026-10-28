@@ -4,6 +4,7 @@ Squad Python Specialization - Data Engineering
 
 Run it twice in a row. The second run must change nothing.
 """
+import time
 import os
 import csv
 import json
@@ -221,8 +222,60 @@ def save_warehouse(state: dict[str, dict], path: Path = WAREHOUSE_PATH) -> None:
 
 def run() -> dict:
     """Process every batch not yet recorded in the checkpoint and return run statistics."""
-    # TODO
-    pass
+    log = setup_logging()
+    started = time.perf_counter()
+    log.info("Run started")
+
+    state = load_existing()
+    log.info("Existing rows loaded: %d", len(state))
+
+    checkpoint = read_checkpoint()
+    stats = {"batches_processed": 0, "new": 0, "updated": 0, "duplicate": 0, "invalid": 0}
+
+    for batch_path in sorted(BATCH_DIR.glob("*.json")):
+        loaded = load_batch(batch_path)
+        if loaded is None:
+            continue  # already logged; never mark an unreadable batch as done
+        batch_id, transactions = loaded
+
+        if batch_id in checkpoint["processed_batches"]:
+            log.info("Batch %s already processed - skipping", batch_id)
+            log.info("New: 0 | Updated: 0 | Duplicates: 0 | Invalid: 0")
+            continue
+
+        log.info("Batch %s: %d records read", batch_id, len(transactions))
+        buckets = classify(state, transactions)
+        log.info(
+            "New: %d | Updated: %d | Duplicates: %d | Invalid: %d",
+            len(buckets["new"]), len(buckets["updated"]),
+            len(buckets["duplicate"]), len(buckets["invalid"]),
+        )
+        for item in buckets["invalid"]:
+            record = item["record"]
+            record_id = record.get(KEY) if isinstance(record, dict) else None
+            label = record_id or f"index {item['index']}"
+            log.warning("Invalid record %s: %s", label, "; ".join(item["reasons"]))
+
+        # 1) data first...
+        state = upsert(state, buckets["new"], buckets["updated"])
+        save_warehouse(state)
+
+        # 2) ...checkpoint only after the save succeeded
+        checkpoint["processed_batches"].append(batch_id)
+        checkpoint["last_run_at"] = datetime.now().isoformat(timespec="seconds")
+        checkpoint["high_watermark"] = max(
+            (r["updated_at"] for r in state.values()), default=None
+        )
+        checkpoint["row_count"] = len(state)
+        write_checkpoint(checkpoint)
+
+        stats["batches_processed"] += 1
+        for name in ("new", "updated", "duplicate", "invalid"):
+            stats[name] += len(buckets[name])
+
+    log.info("Rows after load: %d", len(state))
+    log.info("Run finished in %.2fs", time.perf_counter() - started)
+    return stats
 
 
 if __name__ == "__main__":
