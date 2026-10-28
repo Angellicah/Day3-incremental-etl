@@ -106,14 +106,52 @@ def validate_record(record: dict) -> list[str]:
 
     return reasons
 
+def _ts(record: dict) -> datetime:
+    return datetime.fromisoformat(record["updated_at"])
+
 
 def classify(existing: dict[str, dict], batch: list[dict]) -> dict[str, list[dict]]:
-    """Split the batch into the buckets 'new', 'updated', 'duplicate' and 'invalid'.
+    """Split the batch into the buckets 'new', 'updated', 'duplicate' and 'invalid'."""
+    buckets = {"new": [], "updated": [], "duplicate": [], "invalid": []}
 
-    Use set operations on the keys. A record whose fields are identical to what is
-    already loaded is a duplicate; a record that differs is an update only if it is newer.
-    """
-    raise NotImplementedError
+    # 1. Validate, and keep only the newest version of each ID within the batch
+    candidates = {}
+    for index, record in enumerate(batch):
+        reasons = validate_record(record)
+        if reasons:
+            buckets["invalid"].append({"index": index, "record": record, "reasons": reasons})
+            continue
+
+        record = {**record, "amount_kes": float(record["amount_kes"])}
+        key = record[KEY]
+        if key not in candidates:
+            candidates[key] = record
+        elif _ts(record) >= _ts(candidates[key]):
+            buckets["duplicate"].append(candidates[key])  # older copy is superseded
+            candidates[key] = record
+        else:
+            buckets["duplicate"].append(record)
+
+    # 2. Set operations on the IDs
+    batch_ids = set(candidates)
+    existing_ids = set(existing)
+    new_ids = batch_ids - existing_ids
+    overlap_ids = batch_ids & existing_ids
+
+    for key in sorted(new_ids):
+        buckets["new"].append(candidates[key])
+
+    # 3. Compare field values only where the IDs overlap
+    for key in sorted(overlap_ids):
+        incoming, stored = candidates[key], existing[key]
+        if all(incoming[f] == stored[f] for f in COMPARED_FIELDS):
+            buckets["duplicate"].append(incoming)
+        elif _ts(incoming) > _ts(stored):
+            buckets["updated"].append(incoming)
+        else:
+            buckets["duplicate"].append(incoming)  # stale: older or same-time conflict
+
+    return buckets
 
 
 def upsert(existing: dict[str, dict], new: list[dict], updated: list[dict]) -> dict[str, dict]:
